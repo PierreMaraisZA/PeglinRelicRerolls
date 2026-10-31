@@ -1,0 +1,9 @@
+{
+  "name": "PeglinRelicRerolls",
+  "version_number": "1.0.0",
+  "website_url": "https://github.com/PierreMaraisZA/PeglinRelicRerolls",
+  "description": "Reroll the relics you're offered after minibosses, bosses, chests and in shops. Start each run with 5 rerolls and buy more in shops.",
+  "dependencies": [
+    "BepInEx-BepInExPack_Peglin-5.4.2100"
+  ]
+}
