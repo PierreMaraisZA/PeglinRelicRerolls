@@ -41,7 +41,10 @@ it needs the game's DLLs.
 | `src/ShopReroll.cs` | The shop reroll die and shop relic rerolls |
 | `src/RelicPool.cs` | What a reroll can draw from (uses the game's own relic queues and validity rules) |
 | `src/RerollState.cs`, `src/SavePatches.cs` | The reroll count, saved and restored with the run |
-| `src/RerollHud.cs` | The reroll button and the counter badge above the relic bar |
+| `src/RerollHud.cs` | The reroll button, its die icon, and the counter die above the relic bar |
+| `src/DieSprite.cs` | The pixel-art reroll die, drawn in code |
+| `src/RerollTooltip.cs`, `src/RerollAnimation.cs`, `src/BombCelebration.cs` | Screen effects and messages |
+| `src/CruciballPenalty.cs`, `src/ModLog.cs` | Cruciball reroll penalty and logging |
 | `src/DevTools.cs` | Dev hotkeys (Debug builds only) |
 | `tests/` | xUnit tests for `src/Core` |
 | `thunderstore/manifest.json` | Thunderstore package metadata |
@@ -70,11 +73,13 @@ loading first.
 
 ## Releasing a new version
 
-1. Bump the version in `src/Plugin.cs` (`Version`) and `thunderstore/manifest.json` (`version_number`).
-2. Add the changes to `CHANGELOG.md`.
+1. Bump the version in `src/Plugin.cs` (`Version`), `PeglinRelicRerolls.csproj` (`<Version>`) and
+   `thunderstore/manifest.json` (`version_number`). All three must agree.
+2. Rename `## Unreleased` in `CHANGELOG.md` to `## <version>` and list the changes under it.
 3. If the mod was updated for a new Peglin version, update `SupportedGameVersion` in `src/Plugin.cs`.
-4. Run `powershell -ExecutionPolicy Bypass -File pack.ps1`. It checks the versions match, runs the tests, builds
-   Release, confirms no dev tools are in the DLL, and writes `dist/PierreMarais-PeglinRelicRerolls-<version>.zip`.
+4. Run `powershell -ExecutionPolicy Bypass -File pack.ps1`. It checks that `src/Plugin.cs` and the manifest agree on
+   the version, runs the tests, builds Release, confirms no dev tools are in the DLL, and writes
+   `dist/PierreMarais-PeglinRelicRerolls-<version>.zip`.
 5. Commit, tag `v<version>`, push, and create a GitHub release with the zip:
    `gh release create v<version> dist/PierreMarais-PeglinRelicRerolls-<version>.zip --notes "..."`.
 6. Upload the same zip to Thunderstore (Peglin community, team `PierreMarais`).

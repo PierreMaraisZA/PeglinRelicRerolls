@@ -1,4 +1,5 @@
 using System.Linq;
+using BepInEx.Configuration;
 using PeglinRelicRerolls.Core;
 using TMPro;
 using UnityEngine;
@@ -8,8 +9,8 @@ namespace PeglinRelicRerolls
 {
     /// <summary>
     /// Mod-owned overlay: a reroll button on relic screens, a reroll counter in the shop, and a
-    /// die badge with the count beside the relic bar. Built in code because the game's prefabs have
-    /// no slot for extra UI.
+    /// die badge with the count above the first relic. Built in code because the game's prefabs
+    /// have no slot for extra UI.
     /// </summary>
     internal class RerollHud : MonoBehaviour
     {
@@ -17,6 +18,12 @@ namespace PeglinRelicRerolls
         private const float ButtonPadding = 48f;
         private const float MinButtonWidth = 380f;
         private const float MaxButtonWidth = 1200f;
+        // The die before the text; 48 is 1.5x the 32px sprite, so its pixels stay even.
+        private const float IconSize = 48f;
+        private const float IconGap = 14f;
+        // TextMeshPro's measured text box (ascender to descender, not the digits' ink), as a fraction of the die:
+        // the digits come out about 0.3 of the die tall, matching the game's relic countdown numbers.
+        private const float CountHeightRatio = 0.44f;
 
         private static RerollHud _instance;
         private static double _lastRerollTime = double.NegativeInfinity;
@@ -26,15 +33,25 @@ namespace PeglinRelicRerolls
         private Image _panelImage;
         private Button _button;
         private TextMeshProUGUI _label;
+        private Image _icon;
 
         private GameObject _badge;
         private RectTransform _badgeRect;
         private TextMeshProUGUI _badgeCount;
         private TextMeshProUGUI _badgeCountShadow;
+        // Count font size per unit of die height, measured from what TextMeshPro actually draws.
+        private float _countFontScale = 0.5f;
+        private float _countMeasuredAt = -1f;
+        private TMP_FontAsset _countMeasuredFont;
+        private bool _countCalibrated;
         private bool _badgeStyled;
+        private float _nextStyleAttempt;
         private RelicUI _relicUI;
         private float _nextRelicUISearch;
+        private const string ShownState = "shown";
         private string _lastBadgeState;
+        private Transform _lastBadgeParent;
+        private int _countCalibrationTries;
         private float _nextControllerCheck;
         private bool _controllerConnected;
         private readonly Vector3[] _corners = new Vector3[4];
@@ -101,12 +118,17 @@ namespace PeglinRelicRerolls
             _button.navigation = new Navigation { mode = Navigation.Mode.None };
             _button.onClick.AddListener(Reroll);
 
+            _icon = new GameObject("Icon", typeof(RectTransform), typeof(Image)).GetComponent<Image>();
+            _icon.transform.SetParent(_panel.transform, false);
+            _icon.sprite = DieSprite.Get();
+            _icon.preserveAspect = true;
+            _icon.raycastTarget = false;
+            _icon.rectTransform.sizeDelta = new Vector2(IconSize, IconSize);
+
+            // Icon and label are placed side by side, centred together, in SetButtonText.
             _label = CreateText("Label", _panel.transform, 34f, TextAlignmentOptions.Center);
             RectTransform labelRect = _label.rectTransform;
-            labelRect.anchorMin = Vector2.zero;
-            labelRect.anchorMax = Vector2.one;
-            labelRect.offsetMin = new Vector2(ButtonPadding / 2f, 0f);
-            labelRect.offsetMax = new Vector2(-ButtonPadding / 2f, 0f);
+            labelRect.anchorMin = labelRect.anchorMax = new Vector2(0.5f, 0.5f);
             // If a message is wider than the widest button, shrink the text rather than overflow.
             _label.enableAutoSizing = true;
             _label.fontSizeMin = 18f;
@@ -128,6 +150,8 @@ namespace PeglinRelicRerolls
         {
             if (_badge != null)
             {
+                // Destroy takes effect at the end of the frame; hide it so the old badge can't show beside the new.
+                _badge.SetActive(false);
                 Destroy(_badge);
             }
             _badge = new GameObject("PeglinRelicRerollsBadge", typeof(RectTransform), typeof(Image), typeof(LayoutElement));
@@ -200,6 +224,8 @@ namespace PeglinRelicRerolls
             _button.interactable = canReroll;
             // A greyed-out button shouldn't swallow clicks meant for whatever is underneath it.
             _panelImage.raycastTarget = canReroll;
+            // The button's tint only reaches its background; grey the die with it.
+            _icon.color = canReroll ? Color.white : new Color(0.55f, 0.55f, 0.55f, 0.75f);
 
             string disabledReason = relicScreen ? RelicRerollSession.DisabledReason : ShopRerollSession.DisabledReason;
             string text;
@@ -219,10 +245,19 @@ namespace PeglinRelicRerolls
             }
             SetButtonText(text);
 
-            if (Plugin.RerollHotkey.Value.IsDown() || Plugin.ControllerRerollButton.Value.IsDown())
+            if (Plugin.RerollHotkey.Value.IsDown() || IsButtonDown(Plugin.ControllerRerollButton.Value))
             {
                 Reroll();
             }
+        }
+
+        /// <summary>
+        /// Controller buttons can't use <see cref="KeyboardShortcut.IsDown"/>: it fails while any other key is held,
+        /// and Unity reports every pad button twice (JoystickButton9 and Joystick1Button9), so it never passes.
+        /// </summary>
+        private static bool IsButtonDown(KeyboardShortcut shortcut)
+        {
+            return ShortcutRules.IsDown(shortcut.MainKey, shortcut.Modifiers, Input.GetKeyDown, Input.GetKey);
         }
 
         /// <summary>"T", or "T / R3" once a controller is connected (checked at most once a second).</summary>
@@ -286,8 +321,16 @@ namespace PeglinRelicRerolls
                 return;
             }
             _label.text = text;
-            float width = _label.GetPreferredValues(text, float.PositiveInfinity, ButtonHeight).x + ButtonPadding;
-            _panelRect.sizeDelta = new Vector2(Mathf.Clamp(width, MinButtonWidth, MaxButtonWidth), ButtonHeight);
+            const float iconSpace = IconSize + IconGap;
+            float textWidth = _label.GetPreferredValues(text, float.PositiveInfinity, ButtonHeight).x;
+            float width = Mathf.Clamp(textWidth + iconSpace + ButtonPadding, MinButtonWidth, MaxButtonWidth);
+            _panelRect.sizeDelta = new Vector2(width, ButtonHeight);
+            // Past the widest button the label gets what's left and its auto-sizing shrinks the text.
+            float labelWidth = Mathf.Min(textWidth, width - iconSpace - ButtonPadding);
+            float left = -(iconSpace + labelWidth) / 2f;
+            _icon.rectTransform.anchoredPosition = new Vector2(left + IconSize / 2f, 0f);
+            _label.rectTransform.sizeDelta = new Vector2(labelWidth, ButtonHeight);
+            _label.rectTransform.anchoredPosition = new Vector2(left + iconSpace + labelWidth / 2f, 0f);
         }
 
         private void UpdateBadge()
@@ -300,7 +343,11 @@ namespace PeglinRelicRerolls
             }
             if (hiddenReason != null)
             {
-                LogBadgeState($"hidden ({hiddenReason})");
+                if (_lastBadgeState != hiddenReason)
+                {
+                    _lastBadgeState = hiddenReason;
+                    ModLog.Info($"Reroll badge: hidden ({hiddenReason})");
+                }
                 if (_badge != null && _badge.activeSelf)
                 {
                     _badge.SetActive(false);
@@ -323,15 +370,24 @@ namespace PeglinRelicRerolls
             {
                 _badge.transform.SetAsLastSibling();
             }
-            LogBadgeState($"shown, attached to {PathOf(home)}");
+            if (_lastBadgeState != ShownState || _lastBadgeParent != home)
+            {
+                _lastBadgeState = ShownState;
+                _lastBadgeParent = home;
+                ModLog.Info($"Reroll badge: shown, attached to {PathOf(home)}");
+            }
 
             PositionBadge();
-            if (!_badgeStyled)
+            if (!_badgeStyled && Time.unscaledTime >= _nextStyleAttempt)
             {
+                // Fall back to another game font only until the relic countdown style has been copied; once it has,
+                // the badge must keep the countdown font (it may be TextMeshPro's default asset).
+                UseGameFont(_badgeCount);
+                UseGameFont(_badgeCountShadow);
                 _badgeStyled = CopyRelicCountdownStyle();
+                // Until styling succeeds this searches the scene; retry half as often instead of every frame.
+                _nextStyleAttempt = Time.unscaledTime + 0.5f;
             }
-            UseGameFont(_badgeCount);
-            UseGameFont(_badgeCountShadow);
             string count = RerollState.Count.ToString();
             _badgeCount.text = count;
             _badgeCountShadow.text = count;
@@ -373,16 +429,6 @@ namespace PeglinRelicRerolls
             }
             float alpha = EffectiveAlpha(_relicUI.transform);
             return alpha > 0.05f ? null : $"relic bar faded out, alpha {alpha:0.00}";
-        }
-
-        /// <summary>Logs the badge's state only when it changes, so the log shows why it appears or disappears.</summary>
-        private void LogBadgeState(string state)
-        {
-            if (state != _lastBadgeState)
-            {
-                _lastBadgeState = state;
-                ModLog.Info($"Reroll badge: {state}");
-            }
         }
 
         private static string PathOf(Transform transform)
@@ -430,14 +476,12 @@ namespace PeglinRelicRerolls
             }
 
             RectTransform reference = _relicUI.transform as RectTransform;
-            bool aboveIcon = false;
             for (int i = 0; i < _relicUI.transform.childCount; i++)
             {
                 Transform child = _relicUI.transform.GetChild(i);
                 if (child.gameObject.activeInHierarchy && child.GetComponent<RelicIcon>() != null)
                 {
                     reference = (RectTransform)child;
-                    aboveIcon = true;
                     break;
                 }
             }
@@ -451,12 +495,9 @@ namespace PeglinRelicRerolls
             Vector2 topLeft = home.InverseTransformPoint(_corners[1]);
             Vector2 topRight = home.InverseTransformPoint(_corners[2]);
             Vector2 bottomLeft = home.InverseTransformPoint(_corners[0]);
+            // With no relic icon the reference is the relic bar, which can be a wide or tall strip: the smaller
+            // side is the closest stand-in for a relic's size (its width, for the usual tall strip).
             float size = Mathf.Min(topRight.x - topLeft.x, topLeft.y - bottomLeft.y);
-            if (!aboveIcon)
-            {
-                // The bare relic bar can be a tall strip; use its width as a stand-in relic size.
-                size = topRight.x - topLeft.x;
-            }
             if (size <= 0f)
             {
                 return;
@@ -467,32 +508,99 @@ namespace PeglinRelicRerolls
             _badgeRect.sizeDelta = new Vector2(size, size);
             _badgeRect.localPosition = new Vector3(topLeft.x, topLeft.y + gap, 0f);
 
-            float fontSize = size * 0.5f;
+            // As tall as the game's relic countdowns, whatever font or font asset is in use.
+            float fontSize = CountFontSize(size);
             _badgeCount.fontSize = fontSize;
             _badgeCountShadow.fontSize = fontSize;
-            Vector2 textSize = new Vector2(size, size * 0.6f);
-            Vector2 textOffset = new Vector2(size * 0.12f, -size * 0.14f);
+            // Sit in the die's bottom-right corner, like a relic's countdown number on its icon.
+            Vector2 textSize = new Vector2(size * 0.95f, size * 0.7f);
+            Vector2 textOffset = new Vector2(-size * 0.02f, size * 0.02f);
             _badgeCount.rectTransform.sizeDelta = textSize;
             _badgeCountShadow.rectTransform.sizeDelta = textSize;
             _badgeCount.rectTransform.anchoredPosition = textOffset;
-            _badgeCountShadow.rectTransform.anchoredPosition = textOffset + new Vector2(size * 0.04f, -size * 0.04f);
+            _badgeCountShadow.rectTransform.anchoredPosition = textOffset + new Vector2(size * 0.03f, -size * 0.03f);
         }
 
-        /// <summary>Match the font and colours of a relic countdown number if one is on screen.</summary>
+        /// <summary>
+        /// Font size that draws the count <see cref="CountHeightRatio"/> of the die tall.
+        ///
+        /// A font size number can't be trusted across font assets: each asset carries its own point size, so the
+        /// same fontSize can draw several times taller in one font than another. So set a probe size, measure what
+        /// TextMeshPro actually draws, and scale from there. Re-measured only when the die size or font changes.
+        /// </summary>
+        private float CountFontSize(float size)
+        {
+            bool sizeOrFontChanged = Mathf.Abs(size - _countMeasuredAt) > 0.5f || _countMeasuredFont != _badgeCount.font;
+            if (sizeOrFontChanged)
+            {
+                _countCalibrationTries = 0;
+            }
+            if (sizeOrFontChanged || !_countCalibrated)
+            {
+                CalibrateCountFont(size);
+            }
+            return Mathf.Max(1f, size * _countFontScale);
+        }
+
+        private void CalibrateCountFont(float size)
+        {
+            _countMeasuredAt = size;
+            _countMeasuredFont = _badgeCount.font;
+            _countCalibrated = false;
+            _countFontScale = 0.5f;
+            if (string.IsNullOrEmpty(_badgeCount.text))
+            {
+                return; // Nothing drawn yet; measure on a later frame, once the count is set.
+            }
+            _badgeCount.fontSize = size;
+            _badgeCount.ForceMeshUpdate();
+            float drawn = _badgeCount.textBounds.size.y;
+            if (drawn <= 0.01f)
+            {
+                // Nothing measurable (no atlas, or no font at all): stop probing every frame and keep the fallback.
+                if (++_countCalibrationTries >= 3)
+                {
+                    _countCalibrated = true;
+                }
+                return;
+            }
+            _countCalibrationTries = 0;
+            _countFontScale = Mathf.Clamp(CountHeightRatio * size / drawn, 0.1f, 1.5f);
+            _countCalibrated = true;
+            ModLog.Info($"Reroll badge: count {drawn:0.#} tall at font size {size:0.#}, scale {_countFontScale:0.00} ({_badgeCount.font?.name})");
+        }
+
+        /// <summary>Match the font, colours and size of a relic countdown number if one is on screen.</summary>
         private bool CopyRelicCountdownStyle()
         {
             foreach (RelicIcon icon in FindObjectsOfType<RelicIcon>())
             {
-                if (icon.countdownText == null || icon.countdownText.font == null)
+                if (icon.countdownText == null)
                 {
                     continue;
                 }
-                _badgeCount.font = icon.countdownText.font;
-                _badgeCount.color = icon.countdownText.color;
+                // A countdown with no font asset of its own draws in TextMeshPro's default font, which is what the
+                // game's own numbers use, so it has to be adopted too (null would fall back to another font).
+                _badgeCount.font = icon.countdownText.font != null ? icon.countdownText.font : TMP_Settings.defaultFontAsset;
+                // The game fades countdown numbers by tweening this colour; a copy taken mid-fade would stay dim.
+                Color countColor = icon.countdownText.color;
+                countColor.a = 1f;
+                _badgeCount.color = countColor;
+                // The countdown's material carries the thick black outline that keeps its numbers readable over
+                // relic art; the die's white pips need the same. Read the shared one: reading fontMaterial would
+                // give this game's countdown text a private material instance as a side effect.
+                Material countdownMaterial = icon.countdownText.fontSharedMaterial;
+                if (countdownMaterial != null)
+                {
+                    _badgeCount.fontSharedMaterial = countdownMaterial;
+                }
+                // One font for both copies, so the calibrated size shifts the drop shadow with the number.
+                _badgeCountShadow.font = _badgeCount.font;
                 if (icon.countdownTextDropShadow != null)
                 {
-                    _badgeCountShadow.font = icon.countdownTextDropShadow.font != null ? icon.countdownTextDropShadow.font : icon.countdownText.font;
-                    _badgeCountShadow.color = icon.countdownTextDropShadow.color;
+                    Color shadowColor = icon.countdownTextDropShadow.color;
+                    shadowColor.a = 1f;
+                    _badgeCountShadow.color = shadowColor;
                 }
                 return true;
             }

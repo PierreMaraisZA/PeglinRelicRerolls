@@ -11,7 +11,7 @@ Don't like the relics you're offered? Reroll them.
 - **Chests:** rerolling a common chest has a chance to offer a rare relic. There is an ultra rare chance when rerolling a rare chest that something very special could happen...
 - **Shop:** one common relic is swapped for a **reroll die** you can buy for **20 gold** (doubled in act 4 and with Wand of Greed, like relic prices). One die per shop.
 - **Shop rerolls:** spend a reroll to swap the shop's unbought relics for new ones, up to **3 times per shop**. Prices stay the same.
-- **Reroll counter:** a die above your relics shows how many rerolls you have.
+- **Reroll counter:** a die above your first relic shows how many rerolls you have, with the count in its corner like the game's own relic counts.
 - **Saved with your run:** quitting and continuing can't give you extra rerolls or refund spent ones.
 - **Stored on this computer only:** your rerolls are kept in their own file, separate from your Peglin save, which the mod doesn't touch. They aren't synced by Steam Cloud, so continuing a run on another computer starts you with the default number of rerolls.
 
@@ -57,3 +57,14 @@ Change these in `BepInEx/config/PeglinRelicRerolls.cfg` (start the game once to 
 - The controller button assumes an Xbox-style layout, which is what Steam Input uses. Without Steam Input, a PlayStation controller may need a different `ControllerRerollButton`.
 - The starting relic choice and relics from events can't be rerolled.
 - English only.
+
+## Some of my other mods
+
+- [PeglinBalatroScore](https://thunderstore.io/c/peglin/p/PierreMarais/PeglinBalatroScore/) — a Balatro-style pegs × damage score, with flames and a bomb chest.
+- [PeglinFonts](https://thunderstore.io/c/peglin/p/PierreMarais/PeglinFonts/) — change the font of every text in the game.
+- [PeglinMaxSpeed](https://thunderstore.io/c/peglin/p/PierreMarais/PeglinMaxSpeed/) — play at up to 6× speed without physics bugs.
+- [PeglinQuickRestart](https://thunderstore.io/c/peglin/p/PierreMarais/PeglinQuickRestart/) — hold a button to restart your run.
+
+[Check out all my Peglin mods](https://old.thunderstore.io/c/peglin/p/PierreMarais/)
+
+### [Please consider buying me a coffee ☕](https://ko-fi.com/pierremarais)

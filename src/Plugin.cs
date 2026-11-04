@@ -12,7 +12,7 @@ namespace PeglinRelicRerolls
         // BepInEx names the config file after the GUID, so this gives BepInEx/config/PeglinRelicRerolls.cfg.
         public const string Guid = "PeglinRelicRerolls";
         public const string Name = "PeglinRelicRerolls";
-        public const string Version = "1.0.0";
+        public const string Version = "1.0.1";
 
         /// <summary>The Peglin version this mod was built and tested against (Unity's Application.version).</summary>
         public const string SupportedGameVersion = "2.0.12";
