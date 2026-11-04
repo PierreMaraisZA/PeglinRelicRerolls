@@ -83,3 +83,24 @@ loading first.
 5. Commit, tag `v<version>`, push, and create a GitHub release with the zip:
    `gh release create v<version> dist/PierreMarais-PeglinRelicRerolls-<version>.zip --notes "..."`.
 6. Upload the same zip to Thunderstore (Peglin community, team `PierreMarais`).
+
+   The website's upload button needs a file dialog, so upload through the API with a service-account token instead
+   (team settings → Service Accounts → Add service account; the token is shown once). Write the metadata next to the
+   zip, using a fresh GUID for `upload_uuid`:
+
+   ```
+   {"author_name":"PierreMarais","communities":["peglin"],"has_nsfw_content":false,"upload_uuid":"<new guid>"}
+   ```
+
+   Then post the file and the metadata as a multipart form. `metadata=<file` makes curl read the JSON from the file,
+   which avoids quoting problems with the inner quotes:
+
+   ```
+   curl.exe -X POST "https://thunderstore.io/api/experimental/submission/upload/" ^
+     -H "Authorization: Bearer <token>" ^
+     -F "metadata=<dist\metadata.json" ^
+     -F "file=@dist\PierreMarais-PeglinRelicRerolls-<version>.zip"
+   ```
+
+   A 200 with the new version's details means it is live. Delete the metadata file afterwards; it holds no secret,
+   but it is throwaway.
