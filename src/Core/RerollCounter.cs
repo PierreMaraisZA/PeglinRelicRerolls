@@ -24,7 +24,14 @@ namespace PeglinRelicRerolls.Core
             {
                 throw new ArgumentOutOfRangeException(nameof(amount), "Use TrySpend to remove rerolls.");
             }
-            Count += amount;
+            Adjust(amount); // never wraps past int.MaxValue, even after another mod gave a huge count
+        }
+
+        /// <summary>Adds rerolls, or removes them if negative; the count never goes below 0 or past int.MaxValue.</summary>
+        public void Adjust(int amount)
+        {
+            long adjusted = (long)Count + amount;
+            Count = (int)Math.Max(0L, Math.Min(adjusted, int.MaxValue));
         }
 
         public bool TrySpend()
@@ -45,7 +52,7 @@ namespace PeglinRelicRerolls.Core
             {
                 return;
             }
-            Count++;
+            Adjust(1);
             Used--;
         }
 

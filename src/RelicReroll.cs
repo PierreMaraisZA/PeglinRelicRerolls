@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using HarmonyLib;
 using PeglinRelicRerolls.Core;
@@ -27,6 +28,19 @@ namespace PeglinRelicRerolls
         /// </summary>
         private static RelicIcon[] _slots = new RelicIcon[0];
 
+        /// <summary>
+        /// The rarity each slot rerolls at. A screen set up with mixed rarities (for example a mod's draft of commons
+        /// and rares) keeps each slot's own rarity; every vanilla screen has one rarity, so nothing changes there.
+        /// Chests always use the chest rules instead.
+        /// </summary>
+        private static int[] _slotKinds = new int[0];
+
+        private static bool MixedRarities => !_isTreasure && RerollRules.GroupSlots(_slotKinds).Count > 1;
+
+        /// <summary>The rarities whose pools a reroll on this screen draws from.</summary>
+        private static IEnumerable<RelicRarity> ScreenRarities =>
+            MixedRarities ? RerollRules.GroupSlots(_slotKinds).Select(g => (RelicRarity)g.Key) : new[] { _baseRarity };
+
         /// <summary>The floor boss reward (not a chest that happened to upgrade to a boss relic).</summary>
         private static bool IsBossReward => !_isTreasure && _baseRarity == RelicRarity.BOSS;
 
@@ -37,8 +51,12 @@ namespace PeglinRelicRerolls
 
         private static int AvailableInScreenPool => RerollRules.AvailableToReroll(_unseenInScreenPool, _notOnScreenInPool);
 
+        // A limit another mod set for this screen through the API; null means the normal rules apply. Asked once,
+        // when the screen opens. A limit of 0 means no reroll button at all.
+        private static int? _apiLimit;
+
         public static int RemainingOnScreen =>
-            RerollRules.RemainingOnScreen(IsBossReward, Instance.RerollsUsed, Plugin.BossRerollLimit.Value);
+            RerollRules.RemainingOnScreen(IsBossReward, Instance.RerollsUsed, Plugin.BossRerollLimit.Value, _apiLimit);
 
         public static bool CanRerollNow => RerollRules.CanReroll(RerollState.Count, RemainingOnScreen, AvailableInScreenPool);
 
@@ -53,6 +71,10 @@ namespace PeglinRelicRerolls
             {
                 if (ScreenLimitReached)
                 {
+                    if (_apiLimit.HasValue)
+                    {
+                        return "disabled, this screen's reroll limit has been used";
+                    }
                     return Plugin.BossRerollLimit.Value == 0
                         ? "disabled for floor boss rewards"
                         : "disabled, the floor boss reroll has been used";
@@ -73,22 +95,68 @@ namespace PeglinRelicRerolls
             _canvas = canvas;
             _baseRarity = rarity;
             _isTreasure = isTreasure;
-            // Keyed by the relic screen itself, not the map node: every room load (including the bonus chest and
-            // dev jumps, which reuse the same node without passing the map) creates a new screen and starts fresh,
-            // while the same screen being set up again (e.g. by another mod) keeps its history and boss-limit count.
-            Instance.Enter(canvas);
+            _apiLimit = RelicRerollsApi.RelicScreenLimit(rarity, isTreasure);
+            // Keyed by the relic screen and how it was set up, not the map node: every room load (including the bonus
+            // chest and dev jumps, which reuse the same node without passing the map) creates a new screen and starts
+            // fresh, and so does a different pick on the same panel (e.g. a mod's common draft, then the floor boss
+            // pick). The same screen set up the same way again (e.g. by another mod) keeps its history and boss-limit count.
+            Instance.Enter(new ScreenKey(canvas, (int)rarity, isTreasure));
             _slots = OfferedIcons();
+            RelicManager relicManager = RelicManagerFor(canvas);
+            _slotKinds = RerollRules.SlotKinds(
+                _slots.Select(icon => SlotRarity(relicManager, icon != null ? icon.relic : null)).ToArray(),
+                _slots.Length, (int)rarity);
             Instance.MarkSeen(OfferedRelics());
-            RefreshPoolCounts(RelicManagerFor(canvas));
+            RefreshPoolCounts(relicManager);
             RerollHud.Ensure();
-            ModLog.Info($"Relic screen opened: rarity={rarity}, chest={isTreasure}");
+            ModLog.Info($"Relic screen opened: rarity={rarity}, chest={isTreasure}" +
+                (_apiLimit.HasValue ? $", limit from another mod: {(_apiLimit.Value < 0 ? "unlimited" : _apiLimit.Value.ToString())}" : string.Empty));
             LogSeen();
         }
 
         private static void RefreshPoolCounts(RelicManager relicManager)
         {
-            _unseenInScreenPool = RelicPool.CountAvailable(relicManager, _baseRarity, Instance.Seen);
-            _notOnScreenInPool = RelicPool.CountAvailable(relicManager, _baseRarity, OfferedRelics());
+            _unseenInScreenPool = RerollRules.SafeSum(ScreenRarities.Select(r => RelicPool.CountAvailable(relicManager, r, Instance.Seen)));
+            _notOnScreenInPool = RerollRules.SafeSum(ScreenRarities.Select(r => RelicPool.CountAvailable(relicManager, r, OfferedRelics())));
+        }
+
+        /// <summary>The rarity a slot's relic rerolls at, or null to use the screen's own (no relic, or a rarity the mod can't reroll).</summary>
+        private static int? SlotRarity(RelicManager relicManager, Relic relic)
+        {
+            // Only a rarity the game's own lists give counts: the Consolation Prize and other unlisted relics follow the screen.
+            if (relic == null || relicManager == null || relic == relicManager.consolationPrize)
+            {
+                return null;
+            }
+            RelicRarity? rarity = RelicPool.ListedRarityOf(relicManager, relic);
+            return rarity.HasValue && RelicPool.IsRerollable(rarity.Value) ? (int)rarity.Value : (int?)null;
+        }
+
+        /// <summary>
+        /// Draws a new relic for every slot at that slot's own rarity, in slot order. Each rarity recycles on its own, as a
+        /// single-rarity screen does: once every relic of that rarity has been offered here, it draws from those not on
+        /// screen, so one rarity running out of unseen relics never empties its slots while others are still available.
+        /// </summary>
+        private static Relic[] DrawPerSlot(RelicManager relicManager)
+        {
+            var drawn = new Dictionary<int, IList<Relic>>();
+            var drawnSoFar = new List<Relic>(); // never the same relic twice across rarities
+            Relic[] onScreen = OfferedRelics();
+            foreach (KeyValuePair<int, int> group in RerollRules.GroupSlots(_slotKinds))
+            {
+                RelicRarity rarity = (RelicRarity)group.Key;
+                List<Relic> exclude = Instance.Seen.Concat(drawnSoFar).ToList();
+                int unseen = RelicPool.CountAvailable(relicManager, rarity, exclude);
+                if (RerollRules.ShouldRecycleSeen(unseen, RelicPool.CountAvailable(relicManager, rarity, onScreen.Concat(drawnSoFar))))
+                {
+                    exclude = onScreen.Concat(drawnSoFar).ToList();
+                    ModLog.Info($"Every {rarity} relic has been offered here: drawing {rarity} from those not on screen.");
+                }
+                Relic[] offer = RelicPool.Draw(relicManager, rarity, group.Value, exclude);
+                drawn[group.Key] = offer;
+                drawnSoFar.AddRange(offer);
+            }
+            return RerollRules.InSlotOrder(_slotKinds, drawn).ToArray();
         }
 
         private static RelicManager RelicManagerFor(BattleUpgradeCanvas canvas)
@@ -118,7 +186,7 @@ namespace PeglinRelicRerolls
         {
             get
             {
-                if (_canvas == null || !_canvas.isActiveAndEnabled)
+                if (_canvas == null || !_canvas.isActiveAndEnabled || _apiLimit == 0)
                 {
                     return false;
                 }
@@ -156,7 +224,14 @@ namespace PeglinRelicRerolls
                 return;
             }
             RelicManager relicManager = RelicManagerFor(_canvas);
-            RelicIcon[] icons = _slots.Where(icon => icon != null).ToArray();
+            if (_slots.Any(icon => icon == null))
+            {
+                // A slot was destroyed: drop it and its rarity together, so the rest stay paired.
+                _slotKinds = _slots.Select((icon, i) => icon != null && i < _slotKinds.Length ? (int?)_slotKinds[i] : null)
+                    .Where(kind => kind.HasValue).Select(kind => kind.Value).ToArray();
+                _slots = _slots.Where(icon => icon != null).ToArray();
+            }
+            RelicIcon[] icons = _slots;
             if (relicManager == null || icons.Length == 0 || !CanRerollNow || !RerollState.TrySpend())
             {
                 UIAudioManager.InvalidSelectionSfxRequested?.Invoke();
@@ -174,8 +249,9 @@ namespace PeglinRelicRerolls
 
             // Exclude everything already offered on this screen (not just what is showing now) and all shop relics.
             // No fallback to a lower rarity: a slot with nothing left shows nothing rather than a cheaper relic.
-            RelicRarity rarity = RollRarity(relicManager);
-            Relic[] offer = RelicPool.Draw(relicManager, rarity, icons.Length, Instance.Seen);
+            bool mixed = MixedRarities;
+            RelicRarity rarity = mixed ? _baseRarity : RollRarity(relicManager);
+            Relic[] offer = mixed ? DrawPerSlot(relicManager) : RelicPool.Draw(relicManager, rarity, icons.Length, Instance.Seen);
 
             // Safety net if the pool count and the game's queue ever disagree: don't charge for nothing new.
             if (!Instance.OffersSomethingNew(offer))
@@ -204,9 +280,10 @@ namespace PeglinRelicRerolls
             Instance.MarkSeen(offer);
             Instance.RecordReroll();
             RefreshPoolCounts(relicManager);
-            ModLog.Info($"Rerolled at {rarity}: {offer.Length} of {icons.Length} slot(s) filled: {string.Join(", ", offer.Select(RelicPool.DisplayName))}. " +
+            ModLog.Info($"Rerolled at {(mixed ? "each slot's own rarity" : rarity.ToString())}:{offer.Length} of {icons.Length} slot(s) filled: {string.Join(", ", offer.Select(RelicPool.DisplayName))}. " +
                 $"Rerolls left: {RerollState.Count}");
             LogSeen();
+            RelicRerollsApi.RerollHappened(_isTreasure ? RerollPlaces.Chest : RerollPlaces.RelicScreen, OfferedRelics());
 
             if (rarity == RelicRarity.BOSS && _baseRarity != RelicRarity.BOSS)
             {
@@ -244,28 +321,33 @@ namespace PeglinRelicRerolls
 
         private static RelicRarity RollRarity(RelicManager relicManager)
         {
-            if (!_isTreasure || (_baseRarity != RelicRarity.COMMON && _baseRarity != RelicRarity.RARE))
+            // Only common and rare chests can upgrade; any other rarity, known or not, is rerolled as itself.
+            ChestTier? baseTier = ToTier(_baseRarity);
+            if (!_isTreasure || baseTier == null || baseTier == ChestTier.Boss)
             {
                 return _baseRarity;
             }
             // Deterministic per run seed and reroll number, and leaves the game's seeded UnityEngine.Random untouched.
             double roll = RerollRules.UpgradeRoll(StaticGameData.currentSeed, RerollState.Used);
-            ChestTier chest = ToTier(_baseRarity);
+            ChestTier chest = baseTier.Value;
             ChestTier rolled = RerollRules.ChestRerollTier(chest, roll, Plugin.ChestRareUpgradeChance.Value, Plugin.ChestBossUpgradeChance.Value);
             int unseenInRolled = rolled == chest ? _unseenInScreenPool : RelicPool.CountAvailable(relicManager, ToRarity(rolled), Instance.Seen);
             return ToRarity(RerollRules.AvailableTier(chest, rolled, unseenInRolled));
         }
 
-        private static ChestTier ToTier(RelicRarity rarity)
+        /// <summary>The chest tier for a rarity, or null for a rarity the mod doesn't know (never assumed to be Common).</summary>
+        private static ChestTier? ToTier(RelicRarity rarity)
         {
             switch (rarity)
             {
-                case RelicRarity.BOSS:
-                    return ChestTier.Boss;
+                case RelicRarity.COMMON:
+                    return ChestTier.Common;
                 case RelicRarity.RARE:
                     return ChestTier.Rare;
+                case RelicRarity.BOSS:
+                    return ChestTier.Boss;
                 default:
-                    return ChestTier.Common;
+                    return null;
             }
         }
 
@@ -273,12 +355,14 @@ namespace PeglinRelicRerolls
         {
             switch (tier)
             {
-                case ChestTier.Boss:
-                    return RelicRarity.BOSS;
+                case ChestTier.Common:
+                    return RelicRarity.COMMON;
                 case ChestTier.Rare:
                     return RelicRarity.RARE;
+                case ChestTier.Boss:
+                    return RelicRarity.BOSS;
                 default:
-                    return RelicRarity.COMMON;
+                    throw new System.ArgumentOutOfRangeException(nameof(tier), tier, "Unknown chest tier.");
             }
         }
     }

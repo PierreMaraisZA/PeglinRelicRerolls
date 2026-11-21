@@ -1,7 +1,43 @@
+using System;
 using System.Collections.Generic;
 
 namespace PeglinRelicRerolls.Core
 {
+    /// <summary>
+    /// Identifies one relic screen: the panel object plus how it was set up. The game (and mods such as Boss Rush)
+    /// can open different relic picks on the same panel, e.g. a common draft followed by the floor boss pick; those
+    /// are different screens. Setting up the same panel the same way again is the same screen.
+    /// </summary>
+    public readonly struct ScreenKey : IEquatable<ScreenKey>
+    {
+        public ScreenKey(object screen, int rarity, bool isChest)
+        {
+            Screen = screen;
+            Rarity = rarity;
+            IsChest = isChest;
+        }
+
+        public object Screen { get; }
+
+        public int Rarity { get; }
+
+        public bool IsChest { get; }
+
+        public bool Equals(ScreenKey other) =>
+            ReferenceEquals(Screen, other.Screen) && Rarity == other.Rarity && IsChest == other.IsChest;
+
+        public override bool Equals(object obj) => obj is ScreenKey other && Equals(other);
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int hash = Screen != null ? System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(Screen) : 0;
+                return (hash * 397 ^ Rarity) * 2 + (IsChest ? 1 : 0);
+            }
+        }
+    }
+
     /// <summary>
     /// Everything shown on one relic screen "instance" (a single post-battle reward or a single chest),
     /// so rerolls never offer a relic the player has already seen there. The instance is keyed by the

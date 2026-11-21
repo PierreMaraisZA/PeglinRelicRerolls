@@ -48,10 +48,16 @@ namespace PeglinRelicRerolls.Core
             return -1;
         }
 
-        /// <summary>The die's price, doubled by the same things that double shop relic prices (Wand of Greed, act 4).</summary>
-        public static int ShopRerollCost(int baseCost, bool wandOfGreed, bool act4)
+        /// <summary>
+        /// The die's price. The slot it replaces already carries the game's price multiplier (Wand of Greed, act 4,
+        /// whatever else the game adds), so use that; if it couldn't be read (zero or less), fall back to Wand of
+        /// Greed alone.
+        /// </summary>
+        public static int ShopRerollCost(int baseCost, int slotPriceMultiplier, bool wandOfGreed)
         {
-            return Math.Max(0, baseCost) * (wandOfGreed ? 2 : 1) * (act4 ? 2 : 1);
+            int multiplier = slotPriceMultiplier > 0 ? slotPriceMultiplier : (wandOfGreed ? 2 : 1);
+            long cost = (long)Math.Max(0, baseCost) * multiplier;
+            return (int)Math.Min(cost, int.MaxValue);
         }
 
         /// <summary>Parses "5,10,15" into penalty levels, ignoring blanks, junk and non-positive values.</summary>
@@ -106,11 +112,16 @@ namespace PeglinRelicRerolls.Core
         }
 
         /// <summary>
-        /// Rerolls still allowed on the current relic screen. Only the floor boss reward is capped;
-        /// a negative limit means uncapped.
+        /// Rerolls still allowed on the current relic screen. By default only the floor boss reward is capped;
+        /// a negative limit means uncapped. A limit given through the API replaces that rule for the screen
+        /// (0 = none, negative = unlimited, n = at most n).
         /// </summary>
-        public static int RemainingOnScreen(bool isBossReward, int usedOnScreen, int bossLimit)
+        public static int RemainingOnScreen(bool isBossReward, int usedOnScreen, int bossLimit, int? apiLimit = null)
         {
+            if (apiLimit.HasValue)
+            {
+                return RemainingUnderLimit(usedOnScreen, apiLimit.Value);
+            }
             return isBossReward ? RemainingUnderLimit(usedOnScreen, bossLimit) : int.MaxValue;
         }
 
@@ -148,6 +159,73 @@ namespace PeglinRelicRerolls.Core
         public static int AvailableToReroll(int unseenInPool, int notOnScreenInPool)
         {
             return unseenInPool > 0 ? unseenInPool : Math.Max(0, notOnScreenInPool);
+        }
+
+        /// <summary>
+        /// The rarity each slot rerolls at. A slot showing a relic of a higher rarity than the screen's (for example a
+        /// mod's draft with rares among commons) keeps that rarity; every other slot rerolls at the screen's rarity. A
+        /// lower one is the game's own fallback when a pool runs dry, so vanilla screens reroll exactly as before.
+        /// Rarities compare by their number, higher meaning rarer.
+        /// </summary>
+        public static int[] SlotKinds(IReadOnlyList<int?> shown, int slotCount, int screenRarity)
+        {
+            var kinds = new int[Math.Max(0, slotCount)];
+            for (int i = 0; i < kinds.Length; i++)
+            {
+                int? own = shown != null && i < shown.Count ? shown[i] : null;
+                kinds[i] = own.HasValue && own.Value > screenRarity ? own.Value : screenRarity;
+            }
+            return kinds;
+        }
+
+        /// <summary>How many slots of each kind there are, in order of first appearance.</summary>
+        public static List<KeyValuePair<int, int>> GroupSlots(IReadOnlyList<int> slotKinds)
+        {
+            var groups = new List<KeyValuePair<int, int>>();
+            foreach (int kind in slotKinds ?? new int[0])
+            {
+                int index = groups.FindIndex(g => g.Key == kind);
+                if (index < 0)
+                {
+                    groups.Add(new KeyValuePair<int, int>(kind, 1));
+                }
+                else
+                {
+                    groups[index] = new KeyValuePair<int, int>(kind, groups[index].Value + 1);
+                }
+            }
+            return groups;
+        }
+
+        /// <summary>
+        /// Puts what was drawn for each kind back into slot order. A kind that came up short leaves its later slots
+        /// out, so the result can be shorter than the slot list (the screen hides the slots it can't fill).
+        /// </summary>
+        public static List<T> InSlotOrder<T>(IReadOnlyList<int> slotKinds, IDictionary<int, IList<T>> drawn)
+        {
+            var used = new Dictionary<int, int>();
+            var result = new List<T>();
+            foreach (int kind in slotKinds ?? new int[0])
+            {
+                used.TryGetValue(kind, out int taken);
+                if (drawn != null && drawn.TryGetValue(kind, out IList<T> items) && items != null && taken < items.Count)
+                {
+                    result.Add(items[taken]);
+                    used[kind] = taken + 1;
+                }
+            }
+            return result;
+        }
+
+        /// <summary>Adds pool counts without overflowing (a count the game couldn't give is int.MaxValue).</summary>
+        public static int SafeSum(IEnumerable<int> counts)
+        {
+            long total = 0;
+            foreach (int count in counts ?? new int[0])
+            {
+                total += Math.Max(0, count);
+            }
+            return total > int.MaxValue ? int.MaxValue : (int)total;
         }
 
         /// <summary>Recycle the do-not-offer list when nothing unseen is left but other relics still exist.</summary>

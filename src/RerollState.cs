@@ -22,7 +22,11 @@ namespace PeglinRelicRerolls
     {
         private static readonly RerollCounter Counter = new RerollCounter();
 
-        private static string FilePath => Path.Combine(Paths.ConfigPath, "PeglinRelicRerolls.state");
+        /// <summary>
+        /// The slot's file. The default slot is the file earlier versions used. Looked up on every save and load,
+        /// because another mod decides the slot per run.
+        /// </summary>
+        private static string FilePath(string slot) => Path.Combine(Paths.ConfigPath, StateSlots.FileName(slot));
 
         public static int Count => Counter.Count;
 
@@ -37,11 +41,24 @@ namespace PeglinRelicRerolls
 
         public static void Add(int amount) => Counter.Add(amount);
 
+        /// <summary>For the public API: adds or, if negative, removes rerolls, never going below 0.</summary>
+        public static void Adjust(int amount) => Counter.Adjust(amount);
+
         public static bool TrySpend() => Counter.TrySpend();
 
         public static void Refund() => Counter.Refund();
 
+        /// <summary>Starting rerolls for a new run: another mod's answer if it gives one, otherwise the usual rule.</summary>
         public static int StartingCountFor(int cruciballLevel)
+        {
+            return RelicRerollsApi.StartingCount() ?? ConfiguredStartingCount(cruciballLevel);
+        }
+
+        /// <summary>
+        /// The usual starting count (settings and Cruciball penalty). Continuing a run uses this, never the API's
+        /// starting-count providers, which are only for new runs.
+        /// </summary>
+        private static int ConfiguredStartingCount(int cruciballLevel)
         {
 #if DEBUG
             if (Plugin.DevModeActive && Plugin.DevStartingRerolls.Value >= 0)
@@ -53,45 +70,57 @@ namespace PeglinRelicRerolls
                 RerollRules.ParsePenaltyLevels(Plugin.CruciballPenaltyLevels.Value), cruciballLevel);
         }
 
-        /// <summary>Called when the game saves the run.</summary>
+        /// <summary>Called when the game saves the run (and by the API, for modes with their own save flow).</summary>
         public static void Commit()
         {
+            if (!RelicRerollsApi.TryCurrentSlot(out string slot))
+            {
+                return;
+            }
+            string path = FilePath(slot);
             try
             {
-                File.WriteAllText(FilePath, Counter.Snapshot(StaticGameData.currentSeed).Serialize());
+                File.WriteAllText(path, Counter.Snapshot(StaticGameData.currentSeed).Serialize());
+                // The pre-rename file only ever belonged to the default slot.
                 string legacyPath = Path.Combine(Paths.ConfigPath, Plugin.LegacyStateFile);
-                if (File.Exists(legacyPath))
+                if (IsDefaultSlot(slot) && File.Exists(legacyPath))
                 {
                     File.Delete(legacyPath);
                 }
             }
             catch (Exception e)
             {
-                Plugin.Log.LogWarning($"Could not write {FilePath}: {e.Message}");
+                Plugin.Log?.LogWarning($"Could not write {path}: {e.Message}");
             }
         }
 
-        /// <summary>Called when the game loads a saved run (after it has restored the run seed).</summary>
+        /// <summary>Called when the game loads a saved run (after it has restored the run seed), and by the API.</summary>
         public static void Restore()
         {
+            if (!RelicRerollsApi.TryCurrentSlot(out string slot))
+            {
+                return;
+            }
+            string path = FilePath(slot);
             string saved = null;
             try
             {
                 // Fall back to the pre-rename file so a run in progress keeps its rerolls after the rename.
                 string legacyPath = Path.Combine(Paths.ConfigPath, Plugin.LegacyStateFile);
-                string path = File.Exists(FilePath) ? FilePath : legacyPath;
-                if (File.Exists(path))
+                string readPath = StateSlots.ReadLegacyFile(IsDefaultSlot(slot), File.Exists(path)) ? legacyPath : path;
+                if (File.Exists(readPath))
                 {
-                    saved = File.ReadAllText(path);
+                    saved = File.ReadAllText(readPath);
                 }
             }
             catch (Exception e)
             {
-                Plugin.Log.LogWarning($"Could not read {FilePath}: {e.Message}");
+                Plugin.Log.LogWarning($"Could not read {path}: {e.Message}");
             }
 
             CruciballManager cruciball = Resources.FindObjectsOfTypeAll<CruciballManager>().FirstOrDefault();
-            int startingCount = StartingCountFor(cruciball != null ? cruciball.currentCruciballLevel : 0);
+            // Continuing a run never asks the API's starting-count providers, only the usual rule.
+            int startingCount = ConfiguredStartingCount(cruciball != null ? cruciball.currentCruciballLevel : 0);
             string seed = StaticGameData.currentSeed;
             RerollSnapshot snapshot = RerollSnapshot.ResolveOnContinue(saved, seed, startingCount);
             Counter.Restore(snapshot);
@@ -105,5 +134,7 @@ namespace PeglinRelicRerolls
                 Plugin.Log.LogWarning($"No saved rerolls for this run; using starting count {Count}");
             }
         }
+
+        private static bool IsDefaultSlot(string slot) => StateSlots.FileName(slot) == StateSlots.DefaultFileName;
     }
 }

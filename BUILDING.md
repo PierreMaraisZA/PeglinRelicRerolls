@@ -40,12 +40,14 @@ it needs the game's DLLs.
 | `src/RelicReroll.cs` | Rerolls on post-battle and chest relic screens |
 | `src/ShopReroll.cs` | The shop reroll die and shop relic rerolls |
 | `src/RelicPool.cs` | What a reroll can draw from (uses the game's own relic queues and validity rules) |
-| `src/RerollState.cs`, `src/SavePatches.cs` | The reroll count, saved and restored with the run |
+| `src/RerollState.cs`, `src/SavePatches.cs` | The reroll count, saved and restored with the run (per state slot) |
+| `src/RelicRerollsApi.cs` | The public API for other mods; a thin wrapper over `src/Core/ApiRegistry.cs` |
 | `src/RerollHud.cs` | The reroll button, its die icon, and the counter die above the relic bar |
 | `src/DieSprite.cs` | The pixel-art reroll die, drawn in code |
 | `src/RerollTooltip.cs`, `src/RerollAnimation.cs`, `src/BombCelebration.cs` | Screen effects and messages |
 | `src/CruciballPenalty.cs`, `src/ModLog.cs` | Cruciball reroll penalty and logging |
 | `src/DevTools.cs` | Dev hotkeys (Debug builds only) |
+| `src/DevApiDemo.cs` | Registers a fake mod through the API to try it in game (Debug builds only, `[Dev] ApiTest`) |
 | `tests/` | xUnit tests for `src/Core` |
 | `thunderstore/manifest.json` | Thunderstore package metadata |
 | `pack.ps1` | Builds the Thunderstore zip |
@@ -66,6 +68,11 @@ a run:
 | F10 | Shop (its stock isn't tied to the run seed) |
 
 `[Dev] StartingRerolls` overrides the starting rerolls for new runs (`-1` to use the normal setting).
+
+`[Dev] ApiTest = true` (independent of `DevMode`) registers a fake mod through `RelicRerollsApi`: 7 starting rerolls,
+a floor boss limit of 2, no reroll button on rare chests, no relic whose name starts with "A" ever offered, and its own
+state file `PeglinRelicRerolls.devapitest.state`. `[Dev] ApiTestHideShop = true` makes its shop filter say no.
+Restart the game after changing either.
 
 Known dev-only issue: pressing a room hotkey while the game is already moving to another scene (e.g. while walking
 onto a map node) can make the two loads race, and the room may fail to set up. Wait for the current scene to finish

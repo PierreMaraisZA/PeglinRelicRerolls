@@ -6,6 +6,15 @@ namespace PeglinRelicRerolls.Tests
     public class RerollSnapshotTests
     {
         [Fact]
+        public void SavedText_KeepsThe101Format()
+        {
+            // Players' existing state files must keep loading: seed|count|used.
+            Assert.True(RerollSnapshot.TryParse("seed-1|3|2", out RerollSnapshot snapshot));
+            Assert.Equal(("seed-1", 3, 2), (snapshot.Seed, snapshot.Count, snapshot.Used));
+            Assert.Equal("seed-1|3|2", snapshot.Serialize());
+        }
+
+        [Fact]
         public void SerializeThenParse_RoundTrips()
         {
             RerollSnapshot original = new RerollSnapshot("ABC123", 3, 7);

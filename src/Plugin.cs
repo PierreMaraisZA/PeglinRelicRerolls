@@ -12,7 +12,7 @@ namespace PeglinRelicRerolls
         // BepInEx names the config file after the GUID, so this gives BepInEx/config/PeglinRelicRerolls.cfg.
         public const string Guid = "PeglinRelicRerolls";
         public const string Name = "PeglinRelicRerolls";
-        public const string Version = "1.0.1";
+        public const string Version = "1.1.0";
 
         /// <summary>The Peglin version this mod was built and tested against (Unity's Application.version).</summary>
         public const string SupportedGameVersion = "2.0.12";
@@ -54,6 +54,8 @@ namespace PeglinRelicRerolls
         internal static ConfigEntry<KeyboardShortcut> DevBossHotkey;
         internal static ConfigEntry<KeyboardShortcut> DevShopHotkey;
         internal static ConfigEntry<int> DevStartingRerolls;
+        internal static ConfigEntry<bool> DevApiTest;
+        internal static ConfigEntry<bool> DevApiHideShop;
 
         internal static bool DevModeActive => DevMode != null && DevMode.Value;
 #else
@@ -166,9 +168,17 @@ namespace PeglinRelicRerolls
                 "Dev mode only: jump to a shop. The shop isn't tied to the run seed, so its stock is random.");
             DevStartingRerolls = Config.Bind("Dev", "StartingRerolls", -1,
                 "Dev mode only: starting rerolls for new runs, ignoring the cruciball penalty. -1 uses the normal [General] StartingRerolls.");
+            DevApiTest = Config.Bind("Dev", "ApiTest", false,
+                "Registers a fake mod through RelicRerollsApi (7 starting rerolls, boss limit 2, no reroll on rare chests, no relics starting with A, " +
+                "its own state file) to try the API in game. Independent of DevMode. Restart the game after changing.");
+            DevApiHideShop = Config.Bind("Dev", "ApiTestHideShop", false,
+                "With ApiTest on: the fake mod's shop filter says no, so shops have no reroll die and no relic rerolls.");
 #endif
 
             new Harmony(Guid).PatchAll(typeof(Plugin).Assembly);
+#if DEBUG
+            DevApiDemo.Register();
+#endif
 #if DEBUG
             Log.LogInfo($"{Name} {Version} loaded (DEBUG build, dev mode {(DevModeActive ? "on" : "off")}).");
 #else

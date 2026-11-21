@@ -23,6 +23,21 @@ namespace PeglinRelicRerolls.Tests
         }
 
         [Fact]
+        public void Add_AndRefund_NeverWrapPastTheLargestCount()
+        {
+            var counter = new RerollCounter();
+            counter.Reset(int.MaxValue);   // another mod can give a huge starting count
+            counter.Add(1);
+            Assert.Equal(int.MaxValue, counter.Count);
+
+            Assert.True(counter.TrySpend());
+            counter.Add(5);
+            counter.Refund();
+            Assert.Equal(int.MaxValue, counter.Count);
+            Assert.Equal(0, counter.Used);
+        }
+
+        [Fact]
         public void Reset_ClampsNegativeStartToZero()
         {
             RerollCounter counter = new RerollCounter();
@@ -79,6 +94,38 @@ namespace PeglinRelicRerolls.Tests
             RerollCounter counter = new RerollCounter();
 
             Assert.Throws<ArgumentOutOfRangeException>(() => counter.Add(-1));
+        }
+
+        [Theory]
+        [InlineData(3, 2, 5)]
+        [InlineData(3, -2, 1)]
+        [InlineData(3, -3, 0)]
+        [InlineData(3, -10, 0)]            // never below 0
+        [InlineData(0, 0, 0)]
+        [InlineData(int.MaxValue, 5, int.MaxValue)]   // no overflow
+        [InlineData(0, int.MinValue, 0)]
+        public void Adjust_AddsOrRemoves_NeverBelowZero(int start, int amount, int expected)
+        {
+            RerollCounter counter = new RerollCounter();
+            counter.Reset(start);
+
+            counter.Adjust(amount);
+
+            Assert.Equal(expected, counter.Count);
+        }
+
+        [Fact]
+        public void Adjust_DoesNotChangeUsed()
+        {
+            RerollCounter counter = new RerollCounter();
+            counter.Reset(3);
+            counter.TrySpend();
+
+            counter.Adjust(-1);
+            counter.Adjust(4);
+
+            Assert.Equal(1, counter.Used);
+            Assert.Equal(5, counter.Count);
         }
 
         [Fact]

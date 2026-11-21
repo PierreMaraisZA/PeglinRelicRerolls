@@ -44,7 +44,11 @@ namespace PeglinRelicRerolls
     {
         private static void Postfix()
         {
-            RerollState.Commit();
+            // A mode with its own save flow commits at its own save points (and may have blocked this save).
+            if (RelicRerollsApi.AutoSaveAllowed())
+            {
+                RerollState.Commit();
+            }
             RelicRerollSession.EndInstance();
         }
     }
@@ -55,7 +59,10 @@ namespace PeglinRelicRerolls
     {
         private static void Postfix()
         {
-            RerollState.Restore();
+            if (RelicRerollsApi.AutoSaveAllowed())
+            {
+                RerollState.Restore();
+            }
         }
     }
 }

@@ -30,6 +30,14 @@ $pluginVersion = (Select-String -Path (Join-Path $root 'src\Plugin.cs') -Pattern
 if ($pluginVersion -ne $version) {
     throw "Version mismatch: src\Plugin.cs says $pluginVersion but thunderstore\manifest.json says $version."
 }
+$projectVersion = ([xml](Get-Content (Join-Path $root 'PeglinRelicRerolls.csproj') -Raw)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+if ($projectVersion -ne $version) {
+    throw "Version mismatch: PeglinRelicRerolls.csproj says $projectVersion but thunderstore\manifest.json says $version."
+}
+$changelogVersion = (Select-String -Path (Join-Path $root 'CHANGELOG.md') -Pattern '^## (\S+)\s*$' | Select-Object -First 1).Matches[0].Groups[1].Value
+if ($changelogVersion -ne $version) {
+    throw "Version mismatch: the newest CHANGELOG.md section is $changelogVersion but thunderstore\manifest.json says $version."
+}
 Write-Host "Packing $($manifest.name) $version" -ForegroundColor Cyan
 
 # 2. Tests.
@@ -44,7 +52,8 @@ if ($LASTEXITCODE -ne 0) { throw 'Release build failed.' }
 $dll = Join-Path $root 'bin\Release\net472\PeglinRelicRerolls.dll'
 
 # 4. Dev tools must never ship to players.
-if ([Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dll)).Contains('DevTools')) {
+$dllText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dll))
+if ($dllText.Contains('DevTools') -or $dllText.Contains('DevApiDemo')) {
     throw 'The Release DLL contains dev tools; check the #if DEBUG blocks.'
 }
 

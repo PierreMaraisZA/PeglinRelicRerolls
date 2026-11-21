@@ -69,7 +69,7 @@ namespace PeglinRelicRerolls
         {
             HashSet<Relic> excluded = new HashSet<Relic>(exclude.Where(relic => relic != null));
             return (relicManager.ShopRelicPool ?? new List<Relic>())
-                .Where(relic => relic != null && !excluded.Contains(relic) && !Owns(relicManager, relic))
+                .Where(relic => relic != null && !excluded.Contains(relic) && !Owns(relicManager, relic) && RelicRerollsApi.RelicAllowed(relic))
                 .Distinct()
                 .ToList();
         }
@@ -82,7 +82,7 @@ namespace PeglinRelicRerolls
             for (int i = 0; i < queueSize; i++)
             {
                 Relic relic = relicManager.GetShopOnlyRelicOffOfQueue();
-                if (relic != null && !excluded.Contains(relic))
+                if (relic != null && !excluded.Contains(relic) && RelicRerollsApi.RelicAllowed(relic))
                 {
                     return relic;
                 }
@@ -93,38 +93,105 @@ namespace PeglinRelicRerolls
         /// <summary>The rarity this relic has for the current class (class overrides included).</summary>
         public static RelicRarity RarityOf(RelicManager relicManager, Relic relic)
         {
-            object selectedClass = Traverse.Create(relicManager).Field("_selectedClass").GetValue();
-            foreach (RelicRarity rarity in new[] { RelicRarity.COMMON, RelicRarity.RARE, RelicRarity.BOSS })
+            // Not in any known list: report the relic's own rarity, or NONE. Never assume Common.
+            return ListedRarityOf(relicManager, relic) ?? (relic != null ? relic.globalRarity : RelicRarity.NONE);
+        }
+
+        /// <summary>
+        /// The relic's rarity for the current class as the game's own rarity lists give it (a secret seed's custom pools
+        /// first, then the normal ones it falls back to), or null when no list has it (the Consolation Prize, say).
+        /// </summary>
+        public static RelicRarity? ListedRarityOf(RelicManager relicManager, Relic relic)
+        {
+            if (relicManager == null || relic == null || PossibleRelicsOfRarity == null)
             {
-                if (PossibleRelicsOfRarity == null || !(PossibleRelicsOfRarity.Invoke(relicManager, new object[] { rarity, false }) is IEnumerable entries))
+                return null;
+            }
+            object selectedClass = Traverse.Create(relicManager).Field("_selectedClass").GetValue();
+            foreach (bool forceNonSecret in new[] { false, true })
+            {
+                foreach (RelicRarity rarity in KnownRarities)
                 {
-                    continue;
-                }
-                foreach (object entry in entries)
-                {
-                    Traverse entryTraverse = Traverse.Create(entry);
-                    if (entryTraverse.Field("relic").GetValue<Relic>() != relic)
+                    if (!(PossibleRelicsOfRarity.Invoke(relicManager, new object[] { rarity, forceNonSecret }) is IEnumerable entries))
                     {
                         continue;
                     }
-                    if (entryTraverse.Field("classRarities").GetValue() is IDictionary classRarities
-                        && selectedClass != null && classRarities.Contains(selectedClass))
+                    foreach (object entry in entries)
                     {
-                        return (RelicRarity)classRarities[selectedClass];
+                        Traverse entryTraverse = Traverse.Create(entry);
+                        if (entryTraverse.Field("relic").GetValue<Relic>() != relic)
+                        {
+                            continue;
+                        }
+                        if (entryTraverse.Field("classRarities").GetValue() is IDictionary classRarities
+                            && selectedClass != null && classRarities.Contains(selectedClass))
+                        {
+                            return (RelicRarity)classRarities[selectedClass];
+                        }
+                        return rarity;
                     }
-                    return rarity;
                 }
             }
-            return relic != null ? relic.globalRarity : RelicRarity.COMMON;
+            return null;
         }
 
-        /// <summary>The given relics plus every shop relic, ready to pass to the game as its "can't offer" list.</summary>
+        /// <summary>
+        /// The given relics, every shop relic, and any relic another mod's filter rules out, ready to pass to the game
+        /// as its "can't offer" list. The filter lives here so counting what's left and drawing agree.
+        /// </summary>
         public static List<Relic> Exclusions(RelicManager relicManager, IEnumerable<Relic> relics)
         {
             List<Relic> excluded = relics.Where(relic => relic != null).ToList();
             excluded.AddRange(ShopRelics(relicManager).Where(relic => !excluded.Contains(relic)));
+            if (RelicRerollsApi.HasRelicFilter)
+            {
+                excluded.AddRange(FilteredOut(relicManager).Where(relic => !excluded.Contains(relic)));
+            }
             return excluded;
         }
+
+        /// <summary>Every relic the game could offer in any rarity that a registered relic filter says no to.</summary>
+        private static IEnumerable<Relic> FilteredOut(RelicManager relicManager)
+        {
+            HashSet<Relic> rejected = new HashSet<Relic>();
+            if (PossibleRelicsOfRarity == null)
+            {
+                return rejected;
+            }
+            try
+            {
+                // Both views of the pool: with a custom secret seed the game can fall back from the secret pool to the
+                // normal one, so a relic the filter rejects must be excluded from either.
+                foreach (bool forceNonSecret in new[] { false, true })
+                {
+                    foreach (RelicRarity rarity in KnownRarities)
+                    {
+                        if (!(PossibleRelicsOfRarity.Invoke(relicManager, new object[] { rarity, forceNonSecret }) is IEnumerable entries))
+                        {
+                            continue;
+                        }
+                        foreach (object entry in entries)
+                        {
+                            Relic relic = Traverse.Create(entry).Field("relic").GetValue<Relic>();
+                            if (relic != null && !rejected.Contains(relic) && !RelicRerollsApi.RelicAllowed(relic))
+                            {
+                                rejected.Add(relic);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning($"Couldn't apply another mod's relic filter: {e.Message}");
+            }
+            return rejected;
+        }
+
+        private static readonly RelicRarity[] KnownRarities = { RelicRarity.COMMON, RelicRarity.RARE, RelicRarity.BOSS };
+
+        /// <summary>True for the rarities the mod knows how to reroll; anything else is left alone, never treated as Common.</summary>
+        public static bool IsRerollable(RelicRarity rarity) => System.Array.IndexOf(KnownRarities, rarity) >= 0;
 
         /// <summary>
         /// Shop-only relics for every class, not just the current one. The game already skips the current class's

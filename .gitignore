@@ -17,3 +17,6 @@ Thumbs.db
 
 # Never commit the game's DLLs (they belong to the game's developers) or built mod DLLs
 *.dll
+
+# Internal agent briefs, not part of the mod
+FUTURE_PROOF_PROMPT.md

@@ -61,9 +61,13 @@ namespace PeglinRelicRerolls
 
         private static bool _hasUnboughtRelics;
 
-        public static void Begin(ShopManager shop, Relic removedForDie)
+        // False when another mod's shop filter turned shop rerolls off. Asked once per shop, when it opens.
+        private static bool _allowedByApi = true;
+
+        public static void Begin(ShopManager shop, Relic removedForDie, bool allowedByApi)
         {
             _shop = shop;
+            _allowedByApi = allowedByApi;
             Instance.Enter(shop);
             Instance.MarkSeen(ShopRelics().Select(slot => slot.Relic));
             if (removedForDie != null)
@@ -78,7 +82,7 @@ namespace PeglinRelicRerolls
         {
             get
             {
-                if (!Plugin.EnableShopRelicReroll.Value || _shop == null || !ShopManager.isOpen || PauseMenu.Paused || GameBlockingWindow.windowOpen)
+                if (!Plugin.EnableShopRelicReroll.Value || !_allowedByApi || _shop == null || !ShopManager.isOpen || PauseMenu.Paused || GameBlockingWindow.windowOpen)
                 {
                     return false;
                 }
@@ -142,7 +146,8 @@ namespace PeglinRelicRerolls
                     _anySlotCanChange |= RelicPool.AvailableShopOnly(relicManager, onShelf).Count > 0;
                     continue;
                 }
-                foreach (RelicRarity rarity in group.Select(slot => slot.Rarity).Distinct())
+                // A rarity the mod doesn't know is left alone, never treated as Common.
+                foreach (RelicRarity rarity in group.Select(slot => slot.Rarity).Distinct().Where(RelicPool.IsRerollable))
                 {
                     int unseen = RelicPool.CountAvailable(relicManager, rarity, Instance.Seen);
                     int notOnShelf = RelicPool.CountAvailable(relicManager, rarity, onShelf);
@@ -165,7 +170,7 @@ namespace PeglinRelicRerolls
             // Every relic left has already been offered in this shop: start the list over, keeping what's on the shelf.
             bool unseenLeft = slots.Any(slot => slot.ShopOnly
                 ? RelicPool.AvailableShopOnly(relicManager, Instance.Seen).Count > 0
-                : RelicPool.CountAvailable(relicManager, slot.Rarity, Instance.Seen) > 0);
+                : RelicPool.IsRerollable(slot.Rarity) && RelicPool.CountAvailable(relicManager, slot.Rarity, Instance.Seen) > 0);
             if (!unseenLeft)
             {
                 Instance.RecycleSeen(onShelf);
@@ -177,6 +182,11 @@ namespace PeglinRelicRerolls
             TooltipManager.Instance?.HideTooltip();
             foreach (ShopRelicSlot slot in slots)
             {
+                if (!slot.ShopOnly && !RelicPool.IsRerollable(slot.Rarity))
+                {
+                    ModLog.Info($"Shop reroll skipped {RelicPool.DisplayName(slot.Relic)}: unknown rarity {slot.Rarity}.");
+                    continue;
+                }
                 IEnumerable<Relic> exclude = Instance.Seen.Concat(onShelf).Concat(chosen);
                 Relic replacement = slot.ShopOnly
                     ? RelicPool.DrawShopOnly(relicManager, exclude)
@@ -207,6 +217,7 @@ namespace PeglinRelicRerolls
             ModLog.Info($"Shop reroll: {changed} of {slots.Count} relic(s) changed: {string.Join(", ", chosen.Select(RelicPool.DisplayName))}. " +
                 $"Rerolls left: {RerollState.Count}, shop rerolls left here: {(RemainingInShop == int.MaxValue ? "unlimited" : RemainingInShop.ToString())}");
             ModLog.Info($"Shop do-not-offer list ({Instance.Seen.Count}): {string.Join(", ", Instance.Seen.Select(RelicPool.DisplayName))}");
+            RelicRerollsApi.RerollHappened(RerollPlaces.Shop, ShopRelics().Select(slot => slot.Relic).ToArray());
         }
 
         /// <summary>Swaps a shop slot's relic in place, keeping its price and any price increases it had.</summary>
@@ -236,6 +247,10 @@ namespace PeglinRelicRerolls
             {
                 slot.ShopItem.itemBackground.transform.localRotation = Quaternion.identity;
             }
+
+            // With the HP-cost curse, Initialize adds health listeners each time; drop the old ones so the item doesn't
+            // keep a second pair after the shop closes.
+            ShopHealthListeners.Remove(slot.ShopItem);
 
             Traverse shop = Traverse.Create(_shop);
             slot.ShopItem.Initialize(newItem, _shop, shop.Field("_playerHealthController").GetValue<PlayerHealthController>(), _shop.relicManager);
@@ -305,10 +320,12 @@ namespace PeglinRelicRerolls
             IPurchasableItem[] ____purchasableRelics, PlayerHealthController ____playerHealthController)
         {
             RerollHud.Ensure();
-            Relic removedForDie = Plugin.EnableShopReroll.Value
+            // Another mod can switch shop rerolls off (the die and relic rerolls alike).
+            bool allowed = RelicRerollsApi.ShopAllowed();
+            Relic removedForDie = Plugin.EnableShopReroll.Value && allowed
                 ? PlaceDie(__instance, ___relicItems, ____purchasableRelics, ____playerHealthController)
                 : null;
-            ShopRerollSession.Begin(__instance, removedForDie);
+            ShopRerollSession.Begin(__instance, removedForDie, allowed);
         }
 
         /// <summary>
@@ -337,12 +354,20 @@ namespace PeglinRelicRerolls
 
             ShopItem shopItem = Object.Instantiate(shop.purchasablePrefab, shop.relicContainer.transform).GetComponent<ShopItem>();
             shopItem.transform.SetSiblingIndex(replaced.transform.GetSiblingIndex());
+            // The replaced item may never have been enabled, so its own cleanup (OnDisable) doesn't run; stop it
+            // listening to health changes itself, or HP purchases and heals hit a destroyed item.
+            ShopHealthListeners.Remove(replaced);
             replaced.gameObject.SetActive(false);
             Object.Destroy(replaced.gameObject);
 
-            // Doubled by Wand of Greed and in act 4, the same as the game doubles relic prices.
-            bool act4 = MapController.instance != null && MapController.instance.Act == 4;
-            int cost = RerollRules.ShopRerollCost(Plugin.ShopRerollCost.Value, relicManager.WandOfGreedEffectActive(), act4);
+            // Priced like the relic it replaces: that slot already carries the game's multiplier (Wand of Greed, act 4,
+            // anything the game adds later). The game puts the same multiplier on every relic in a shop.
+            int slotMultiplier = replacedItem is PurchasableRelic ? Traverse.Create(replacedItem).Field("_costMultiplier").GetValue<int>() : 0;
+            if (slotMultiplier <= 0)
+            {
+                Plugin.Log.LogWarning("Couldn't read the shop's price multiplier; the reroll die is priced with Wand of Greed only.");
+            }
+            int cost = RerollRules.ShopRerollCost(Plugin.ShopRerollCost.Value, slotMultiplier, relicManager.WandOfGreedEffectActive());
             PurchasableReroll reroll = new PurchasableReroll(cost);
             shopItem.Initialize(reroll, shop, playerHealthController, relicManager);
             ArrowSelection arrow = shopItem.GetComponentInChildren<ArrowSelection>();
@@ -382,9 +407,26 @@ namespace PeglinRelicRerolls
                     return ShopSlotKind.Rare;
                 case RelicRarity.BOSS:
                     return ShopSlotKind.Boss;
-                default:
+                case RelicRarity.COMMON:
                     return ShopSlotKind.Common;
+                default:
+                    // Unknown rarity: never the die's slot, and never assumed to be Common.
+                    return ShopSlotKind.Other;
             }
+        }
+    }
+
+    /// <summary>
+    /// With the HP-cost curse (HP_TO_PURCHASE) the game's ShopItem.Initialize subscribes the item to the static
+    /// player damaged/healed events, and only its OnDisable unsubscribes. Items the mod destroys or sets up again
+    /// must be unsubscribed here, or a dead item throws on every HP change and cuts purchases off half way.
+    /// </summary>
+    internal static class ShopHealthListeners
+    {
+        public static void Remove(ShopItem item)
+        {
+            PlayerHealthController.OnPlayerDamaged = DelegateCleanup.RemoveTarget(PlayerHealthController.OnPlayerDamaged, item);
+            PlayerHealthController.OnPlayerHealed = DelegateCleanup.RemoveTarget(PlayerHealthController.OnPlayerHealed, item);
         }
     }
 

@@ -76,19 +76,30 @@ namespace PeglinRelicRerolls.Tests
         }
 
         [Theory]
-        [InlineData(false, false, 20)]
-        [InlineData(true, false, 40)]   // Wand of Greed
-        [InlineData(false, true, 40)]   // act 4
-        [InlineData(true, true, 80)]    // both, same as the game's relic prices
-        public void ShopRerollCost_DoublesLikeRelicPrices(bool wandOfGreed, bool act4, int expected)
+        [InlineData(1, 20)]
+        [InlineData(2, 40)]   // Wand of Greed or act 4
+        [InlineData(4, 80)]   // both, same as the game's relic prices
+        [InlineData(3, 60)]   // any multiplier a future game version uses, not just act 4's
+        public void ShopRerollCost_FollowsTheSlotsPriceMultiplier(int slotMultiplier, int expected)
         {
-            Assert.Equal(expected, RerollRules.ShopRerollCost(20, wandOfGreed, act4));
+            Assert.Equal(expected, RerollRules.ShopRerollCost(20, slotMultiplier, wandOfGreed: false));
+            Assert.Equal(expected, RerollRules.ShopRerollCost(20, slotMultiplier, wandOfGreed: true));   // the slot already includes it
+        }
+
+        [Theory]
+        [InlineData(false, 20)]
+        [InlineData(true, 40)]
+        public void ShopRerollCost_UnreadableSlot_FallsBackToWandOfGreed(bool wandOfGreed, int expected)
+        {
+            Assert.Equal(expected, RerollRules.ShopRerollCost(20, 0, wandOfGreed));
+            Assert.Equal(expected, RerollRules.ShopRerollCost(20, -3, wandOfGreed));
         }
 
         [Fact]
-        public void ShopRerollCost_NegativeBaseIsFree()
+        public void ShopRerollCost_NegativeBaseIsFree_AndHugeValuesDontOverflow()
         {
-            Assert.Equal(0, RerollRules.ShopRerollCost(-5, true, true));
+            Assert.Equal(0, RerollRules.ShopRerollCost(-5, 4, true));
+            Assert.Equal(int.MaxValue, RerollRules.ShopRerollCost(int.MaxValue, 4, true));
         }
 
         [Fact]
@@ -203,6 +214,17 @@ namespace PeglinRelicRerolls.Tests
         public void RemainingOnScreen_BossRewardIsCapped(int usedOnScreen, int expected)
         {
             Assert.Equal(expected, RerollRules.RemainingOnScreen(isBossReward: true, usedOnScreen, bossLimit: 1));
+        }
+
+        [Theory]
+        [InlineData(false, 0, 2, 2)]              // a mod's limit applies to screens that are normally uncapped
+        [InlineData(false, 2, 2, 0)]
+        [InlineData(true, 0, -1, int.MaxValue)]   // unlimited replaces the boss cap
+        [InlineData(true, 5, 3, 0)]
+        [InlineData(true, 0, 0, 0)]               // 0: nothing to spend
+        public void RemainingOnScreen_AModsLimitReplacesTheBossLimit(bool boss, int used, int apiLimit, int expected)
+        {
+            Assert.Equal(expected, RerollRules.RemainingOnScreen(boss, used, bossLimit: 1, apiLimit));
         }
 
         [Fact]

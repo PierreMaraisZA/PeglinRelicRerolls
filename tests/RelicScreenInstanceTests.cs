@@ -87,6 +87,77 @@ namespace PeglinRelicRerolls.Tests
             Assert.Empty(screen.Seen);
         }
 
+        private const int Common = 1;
+        private const int Boss = 3;
+
+        [Fact]
+        public void ScreenKey_DifferentRarityOnSamePanel_StartsFresh()
+        {
+            // Given a reroll used on a common draft opened on the reward panel (Boss Rush's relic draft)
+            object panel = new object();
+            RelicScreenInstance<string> screen = new RelicScreenInstance<string>();
+            screen.Enter(new ScreenKey(panel, Common, isChest: false));
+            screen.MarkSeen(new[] { "Boots" });
+            screen.RecordReroll();
+
+            // When the same panel is set up for the floor boss pick
+            screen.Enter(new ScreenKey(panel, Boss, isChest: false));
+
+            // Then the boss pick has its own reroll and an empty do-not-offer list
+            Assert.Equal(0, screen.RerollsUsed);
+            Assert.Equal(1, RerollRules.RemainingOnScreen(isBossReward: true, screen.RerollsUsed, bossLimit: 1));
+            Assert.Empty(screen.Seen);
+        }
+
+        [Fact]
+        public void ScreenKey_SameKeyAgain_KeepsHistoryAndRerollCount()
+        {
+            // Given a reroll used on the floor boss pick
+            object panel = new object();
+            RelicScreenInstance<string> screen = new RelicScreenInstance<string>();
+            screen.Enter(new ScreenKey(panel, Boss, isChest: false));
+            screen.MarkSeen(new[] { "Crown" });
+            screen.RecordReroll();
+
+            // When the same pick is set up again (a fresh but equal key)
+            screen.Enter(new ScreenKey(panel, Boss, isChest: false));
+
+            // Then the boss limit can't be bypassed
+            Assert.Equal(1, screen.RerollsUsed);
+            Assert.True(screen.HasSeen("Crown"));
+        }
+
+        [Fact]
+        public void ScreenKey_ChestAndBattleRewardOnSamePanel_AreDifferentScreens()
+        {
+            object panel = new object();
+            RelicScreenInstance<string> screen = new RelicScreenInstance<string>();
+            screen.Enter(new ScreenKey(panel, Common, isChest: true));
+            screen.MarkSeen(new[] { "Boots" });
+            screen.RecordReroll();
+
+            screen.Enter(new ScreenKey(panel, Common, isChest: false));
+
+            Assert.Equal(0, screen.RerollsUsed);
+            Assert.Empty(screen.Seen);
+        }
+
+        [Fact]
+        public void ScreenKey_DifferentPanelSameSetup_AreDifferentScreens()
+        {
+            Assert.NotEqual(new ScreenKey(new object(), Boss, false), new ScreenKey(new object(), Boss, false));
+        }
+
+        [Fact]
+        public void ScreenKey_NullPanel_EqualsItselfWithoutThrowing()
+        {
+            ScreenKey a = new ScreenKey(null, Common, false);
+            ScreenKey b = new ScreenKey(null, Common, false);
+
+            Assert.Equal(a, b);
+            Assert.Equal(a.GetHashCode(), b.GetHashCode());
+        }
+
         [Fact]
         public void Clear_AfterMovingOn_StartsFreshEvenOnSameNodeKey()
         {
